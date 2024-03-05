@@ -1,0 +1,327 @@
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+//#include <FS.h> // nu sterge, a dat o eroare la un moment dat
+#include <HardwareSerial.h>
+
+
+const char* ssid = "DIGI-3brj";
+const char* password = "AFEHT6a4";
+
+//const char* ssid = "DIGI-5-c79C";
+//const char* password = "BjYjv6q9";
+
+//const char* ssid = "hotspot";
+//const char* password = "unudoitreipatru";
+
+
+
+const int ledPin = 2;
+
+const int rxPin = 16; // pins pt Serial2
+const int txPin = 17;
+HardwareSerial DSPSerial(2);
+
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+// Store the last known values, initialize with dummy data
+//String lastKnownJson = "{\"ID\":\"00\",\"CTR\":0,\"I1rmsA\":0.0,\"V1rmsV\":0.0}";
+
+//void notifyClients(const String& message) {
+//  ws.textAll(message);
+//}
+
+//void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+  // Handle incoming WebSocket messages (not needed in this case)
+//}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    Serial.println("WebSocket client connectat");
+    
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.println("WebSocket client deconectat");
+  }
+}
+
+
+void scanNetworks() {
+  Serial.println("Scanning for nearby WiFi networks...");
+  int n = WiFi.scanNetworks();
+  if (n == 0) {
+    Serial.println("No networks found");
+  } else {
+    Serial.print(n);
+    Serial.println(" networks found:");
+    for (int i = 0; i < n; ++i) {
+      // Print SSID and RSSI for each network found
+      Serial.print(i + 1);
+      Serial.print(": ");
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" (");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(" dBm)");
+      Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN)?" (Open)":" (Secured)");
+      delay(10);
+    }
+  }
+  // Finished scanning
+  Serial.println("Scan complete.");
+}
+
+const char MAIN_page[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML>
+<html lang="en">
+<html>
+<head>
+  <title>DSP Data Viewer</title>
+  <style>
+    .container {
+      margin-bottom: 20px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h2 {
+      color: #333;
+      text-align: center;
+    }
+    .value {
+      margin: 5px 0;
+    }
+    #generalInfo, #phase1, #phase2, #phase3, #additionalInfo {
+      padding: 20px;
+    }
+    #generalInfo {
+      background-color: #f7f7f7;
+    }
+    #phase1, #phase2, #phase3 {
+      background-color: #effbff;
+    }
+    #additionalInfo {
+      background-color: #fffbea;
+    }
+    #phaseDiagram {
+      border: 1px solid #ccc;
+      background-color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div id="generalInfo" class="container">
+    <h2>General Info</h2>
+    <p class="value">ID: <span id="ID">N/A</span></p>
+    <p class="value">CTR: <span id="CTR">N/A</span></p>
+  </div>
+
+  <div id="phase1" class="container">
+    <h2>Faza 1</h2>
+    <p class="value">I1rmsA: <span id="I1rmsA">N/A</span></p>
+    <p class="value">V1rmsV: <span id="V1rmsV">N/A</span></p>
+    <p class="value">PF1: <span id="PF1">N/A</span></p>
+    <p class="value">P1WATT: <span id="P1WATT">N/A</span></p>
+    <p class="value">P1VAR: <span id="P1VAR">N/A</span></p>
+  </div>
+
+  <div id="phase2" class="container">
+    <h2>Faza 2</h2>
+    <p class="value">I2rmsA: <span id="I2rmsA">N/A</span></p>
+    <p class="value">V2rmsV: <span id="V2rmsV">N/A</span></p>
+    <p class="value">PF2: <span id="PF2">N/A</span></p>
+<p class="value">P2WATT: <span id="P2WATT">N/A</span></p>
+<p class="value">P2VAR: <span id="P2VAR">N/A</span></p>
+
+  </div>
+  <div id="phase3" class="container">
+    <h2>Faza 3</h2>
+    <p class="value">I3rmsA: <span id="I3rmsA">N/A</span></p>
+    <p class="value">V3rmsV: <span id="V3rmsV">N/A</span></p>
+    <p class="value">PF3: <span id="PF3">N/A</span></p>
+    <p class="value">P3WATT: <span id="P3WATT">N/A</span></p>
+    <p class="value">P3VAR: <span id="P3VAR">N/A</span></p>
+  </div>
+  <div id="additionalInfo" class="container">
+    <h2>Info Aditionala</h2>
+    <p class="value">InullA: <span id="InullA">N/A</span></p>
+    <p class="value">Isum: <span id="Isum">N/A</span></p>
+    <p class="value">Frequency: <span id="fHz">N/A</span></p>
+  </div>
+  <div id="phaseDiagramContainer" class="container">
+    <h2>Phase Diagram</h2>
+    <canvas id="phaseDiagram" width="300" height="300"></canvas>
+  </div>
+  <script>
+    
+
+  drawPhaseDiagram(120.938, 240.434, 119.496)  
+  var ws = new WebSocket('ws://' + window.location.hostname + '/ws');
+  
+  ws.onmessage = function(event) {
+      var data = JSON.parse(event.data);
+      document.getElementById('ID').textContent = data.ID;
+      document.getElementById('CTR').textContent = data.CTR;
+      // Update Phase 1 values
+      document.getElementById('I1rmsA').textContent = data.I1rmsA;
+      document.getElementById('V1rmsV').textContent = data.V1rmsV;
+      document.getElementById('PF1').textContent = data.PF1;
+      document.getElementById('P1WATT').textContent = data.P1WATT;
+      document.getElementById('P1VAR').textContent = data.P1VAR;
+      // Update Phase 2 values
+      document.getElementById('I2rmsA').textContent = data.I2rmsA;
+      document.getElementById('V2rmsV').textContent = data.V2rmsV;
+      document.getElementById('PF2').textContent = data.PF2;
+      document.getElementById('P2WATT').textContent = data.P2WATT;
+      document.getElementById('P2VAR').textContent = data.P2VAR;
+      // Update Phase 3 values
+      document.getElementById('I3rmsA').textContent = data.I3rmsA;
+      document.getElementById('V3rmsV').textContent = data.V3rmsV;
+      document.getElementById('PF3').textContent = data.PF3;
+      document.getElementById('P3WATT').textContent = data.P3WATT;
+      document.getElementById('P3VAR').textContent = data.P3VAR;
+      // Update additional info
+      document.getElementById('InullA').textContent = data.InullA;
+      document.getElementById('Isum').textContent = data.Isum;
+      document.getElementById('fHz').textContent = data.fHz;
+      
+      // Update the phase diagram
+      drawPhaseDiagram(parseFloat(data.uUab), parseFloat(data.uUac), parseFloat(data.uUbc));
+    };
+    
+
+    function drawPhaseDiagram(uUab, uUac, uUbc) {
+    var canvas = document.getElementById('phaseDiagram');
+    if (canvas.getContext) {
+      var ctx = canvas.getContext('2d');
+      var width = canvas.width;
+      var height = canvas.height;
+      var centerX = width / 2;
+      var centerY = height / 2;
+      var radius = Math.min(centerX, centerY) * 0.8; // Adjust to fit inside the canvas
+
+    ctx.clearRect(0, 0, width, height); // Clear the canvas
+
+    // Assuming uUab, uUac, and uUbc are in degrees and converting them to radians
+    var angleA = 0; // Starting angle for phase A
+    var angleB = angleA + uUab * (Math.PI / 180); // Angle for phase B
+    var angleC = angleA + uUac * (Math.PI / 180); // Angle for phase C
+    
+    // Draw the lines
+    drawLine(ctx, centerX, centerY, angleA, radius, 'Red');
+    drawLine(ctx, centerX, centerY, angleB, radius, 'Yellow');
+    drawLine(ctx, centerX, centerY, angleC, radius, 'Blue');
+  }
+}
+
+function drawLine(ctx, x, y, angle, length, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + length * Math.cos(angle), y + length * Math.sin(angle));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+    
+  </script>
+</body>
+</html>
+
+
+)rawliteral";
+
+void setup() {
+
+   /*
+  Serial.begin(115200); // Initialize debugging serial
+  Serial.println("Debugging started");
+
+  Serial2.begin(115200, SERIAL_8N1, rxPin, txPin); // Initialize communication with the DSP
+  Serial.println("Serial2 communication started");
+  
+*/
+
+
+
+
+  Serial.begin(115200);
+  pinMode(ledPin, OUTPUT);
+  // dsp serial, modifica pt serial 1/0, 0 cred ca e de doar test
+  DSPSerial.begin(115200, SERIAL_8N1, rxPin, txPin); // Start UART with 115200 baud rate
+  Serial.println("ESP32 UART JSON Receiver");
+
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Conectare la WiFi...");
+  }
+  if (WiFi.status() == WL_CONNECTED){
+    Serial.println("Conectat la WiFi!");
+    delay(1000);
+    Serial.print("Adresa Ip: ");
+    Serial.println(WiFi.localIP()); }
+    else
+    Serial.println("Esuat in a se conecta");
+    
+     
+  scanNetworks();
+   
+  ws.onEvent(onEvent);
+  server.addHandler(&ws); //atasare 'ws' la server folosind addHandler- asculta pentru conexiuni Websocket
+
+
+  // Serve the main page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", MAIN_page); // MAIN_page should contain the HTML of your webpage
+  });
+
+  server.begin();
+
+}
+
+void loop() {
+  static String buffer = ""; // Buffer to accumulate data
+
+  while (DSPSerial.available()) {
+    char c = DSPSerial.read(); // Read incoming character
+    if (c == '\n') { // Check for end-of-message marker
+      // Check if the received data contains "ID"
+      if (buffer.indexOf("\"ID\"") != -1) {
+        Serial.println("Valid data received: " + buffer); // Print to serial monitor
+        
+        // Parse the JSON data in the buffer
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, buffer);
+        if (!error) {
+          // Successfully parsed JSON data
+          Serial.println("Received JSON:");
+          serializeJsonPretty(doc, Serial);
+
+          // Example: extracting a value
+          const char* id = doc["ID"]; // Assuming ID is a string
+          Serial.print("ID: ");
+          Serial.println(id);
+
+          int ctrVal = doc["CTR"].as<int>(); // Assuming CTR's value is an integer
+          Serial.print("CTR: ");
+          Serial.println(ctrVal);
+
+
+        } else {
+          // Error in parsing JSON
+          Serial.print("deserializeJson() failed: ");
+          Serial.println(error.c_str());
+        }
+      } else {
+        Serial.println("Invalid data received, ignoring.");
+      }
+      buffer = ""; // Clear the buffer for the next message
+    } else {
+      buffer += c; // Accumulate the character into buffer
+    }
+  }
+}
+
